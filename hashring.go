@@ -2,6 +2,7 @@ package hashring
 
 import (
 	"fmt"
+	"slices"
 	"sync"
 )
 
@@ -33,10 +34,10 @@ type Bucket interface {
 type HashRing struct {
 	mu sync.RWMutex
 
-	hasher HashFn
-	// sortedSet         []uint64
-	partitionCount    uint64
-	ReplicationFactor uint64
+	hasher            HashFn
+	sortedSet         []uint64
+	partitionCount    int
+	replicationFactor int
 
 	buckets    map[string]Bucket
 	partitions map[int]Bucket
@@ -49,19 +50,22 @@ func New(config Config, buckets []Bucket) *HashRing {
 		panic("hasher can not be nil")
 	}
 
-	hr := &HashRing{
-		hasher:     config.Hasher,
-		ring:       make(map[uint64]Bucket),
-		buckets:    make(map[string]Bucket),
-		partitions: make(map[int]Bucket),
-	}
-
 	if config.PartitionCount == 0 {
-		hr.partitionCount = DefaultPartitionCount
+		config.PartitionCount = DefaultPartitionCount
 	}
 
 	if config.ReplicationFactor == 0 {
-		hr.ReplicationFactor = DefaultReplicationFactor
+		config.ReplicationFactor = DefaultReplicationFactor
+	}
+
+	hr := &HashRing{
+		hasher:            config.Hasher,
+		sortedSet:         []uint64{},
+		ring:              make(map[uint64]Bucket),
+		buckets:           make(map[string]Bucket),
+		partitions:        make(map[int]Bucket),
+		partitionCount:    config.PartitionCount,
+		replicationFactor: config.ReplicationFactor,
 	}
 
 	for _, b := range buckets {
@@ -95,12 +99,15 @@ func (hr *HashRing) add(bucket Bucket) {
 		return
 	}
 
-	for i := uint64(0); i < hr.ReplicationFactor; i++ {
+	for i := 0; i < hr.replicationFactor; i++ {
 		key := fmt.Sprintf("%s%d", bucket.String(), i)
 		hash := hr.hasher([]byte(key))
 
 		hr.ring[hash] = bucket
+		hr.sortedSet = append(hr.sortedSet, hash)
 	}
+
+	slices.Sort(hr.sortedSet)
 
 	hr.buckets[bucket.String()] = bucket
 
@@ -121,7 +128,7 @@ func (hr *HashRing) remove(key string) {
 		return
 	}
 
-	for i := uint64(0); i < hr.ReplicationFactor; i++ {
+	for i := 0; i < hr.replicationFactor; i++ {
 		key := fmt.Sprintf("%s%d", key, i)
 		hash := hr.hasher([]byte(key))
 
@@ -167,7 +174,7 @@ func (hr *HashRing) getPartitionID(key string) int {
 
 	hash := hr.hasher([]byte(key))
 
-	return int(hash % hr.partitionCount)
+	return int(hash % uint64(hr.partitionCount))
 }
 
 // GetPartitionBucket gets a bucket for a given partition id.
