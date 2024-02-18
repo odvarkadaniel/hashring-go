@@ -14,12 +14,16 @@ const (
 type HashFn func([]byte) uint64
 
 type Config struct {
+	// Hasher is the hash function that we use to disribute the keys
+	// in the hash ring.
 	Hasher HashFn
 
 	// ReplicationFactor determines the number of virtual nodes we
-	// put into the hash ring.
+	// put into the hash ring (replication of a real node on the ring).
 	ReplicationFactor int
-	PartitionCount    int
+
+	// PartitionCount determines how many time we want to partition a key.
+	PartitionCount int
 }
 
 type Bucket interface {
@@ -39,6 +43,7 @@ type HashRing struct {
 	ring       map[uint64]Bucket
 }
 
+// New returns a pointer a HashRing structure.
 func New(config Config, buckets []Bucket) *HashRing {
 	if config.Hasher == nil {
 		panic("hasher can not be nil")
@@ -70,8 +75,10 @@ func New(config Config, buckets []Bucket) *HashRing {
 	return hr
 }
 
+// TODO: Implement the functionality.
 func (hr *HashRing) distibute() {
-
+	// for i := uint64(0); i < hr.partitionCount; i++ {
+	// }
 }
 
 // Add adds a new bucket to the consistent hash ring.
@@ -126,6 +133,7 @@ func (hr *HashRing) remove(key string) {
 	hr.distibute()
 }
 
+// Buckets returns all buckets that exist in the hash ring.
 func (hr *HashRing) Buckets() []Bucket {
 	hr.mu.RLock()
 	defer hr.mu.RUnlock()
@@ -162,6 +170,7 @@ func (hr *HashRing) getPartitionID(key string) int {
 	return int(hash % hr.partitionCount)
 }
 
+// GetPartitionBucket gets a bucket for a given partition id.
 func (hr *HashRing) GetPartitionBucket(id int) Bucket {
 	return hr.getPartitionBucket(id)
 }
@@ -175,4 +184,11 @@ func (hr *HashRing) getPartitionBucket(id int) Bucket {
 	} else {
 		return bucket
 	}
+}
+
+// Get returns a bucket that is associated to a given key.
+func (hr *HashRing) Get(key string) Bucket {
+	id := hr.getPartitionID(key)
+
+	return hr.getPartitionBucket(id)
 }
