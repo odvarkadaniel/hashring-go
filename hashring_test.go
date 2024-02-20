@@ -25,16 +25,16 @@ func TestAdd(t *testing.T) {
 		ReplicationFactor: 20,
 		Hasher:            Sum64,
 	}
-	c := New(*cfg, nil)
+	ring := New(*cfg, nil)
 	members := make(map[string]struct{})
 	for i := 0; i < 8; i++ {
 		member := Server(fmt.Sprintf("node%d", i))
 		members[member.String()] = struct{}{}
-		c.Add(&member)
+		ring.Add(&member)
 	}
 	for member := range members {
 		found := false
-		for _, mem := range c.getBuckets() {
+		for _, mem := range ring.getBuckets() {
 			if member == mem.String() {
 				found = true
 			}
@@ -42,6 +42,46 @@ func TestAdd(t *testing.T) {
 		if !found {
 			t.Fatalf("%s could not be found", member)
 		}
+	}
+}
+
+func TestRemove(t *testing.T) {
+	cfg := &Config{
+		PartitionCount:    23,
+		ReplicationFactor: 20,
+		Hasher:            Sum64,
+	}
+	ring := New(*cfg, nil)
+	members := make(map[string]struct{})
+	for i := 0; i < 8; i++ {
+		member := Server(fmt.Sprintf("node%d", i))
+		members[member.String()] = struct{}{}
+		ring.Add(&member)
+	}
+
+	ring.Remove("node3")
+
+	if len(ring.Buckets()) != 7 {
+		t.Fatalf("Failed to remove a server from the ring")
+	}
+}
+
+func TestGetKey(t *testing.T) {
+	cfg := &Config{
+		PartitionCount:    23,
+		ReplicationFactor: 20,
+		Hasher:            Sum64,
+	}
+	ring := New(*cfg, nil)
+	members := make(map[string]struct{})
+	for i := 0; i < 8; i++ {
+		member := Server(fmt.Sprintf("node%d", i))
+		members[member.String()] = struct{}{}
+		ring.Add(&member)
+	}
+
+	if res := ring.Get("my-key"); res == nil {
+		t.Fatal("Failed to get a key from the ring")
 	}
 }
 
@@ -77,21 +117,3 @@ func BenchmarkLocateKey(b *testing.B) {
 		c.Get(key)
 	}
 }
-
-// func BenchmarkGetClosestN(b *testing.B) {
-// 	cfg := &Config{
-// 		PartitionCount:    23,
-// 		ReplicationFactor: 20,
-// 		Hasher:            xxhash.Sum64,
-// 	}
-// 	c := New(*cfg, nil)
-// 	for i := 0; i < 10; i++ {
-// 		s1 := Server(fmt.Sprintf("node%d", i))
-// 		c.Add(&s1)
-// 	}
-// 	b.ResetTimer()
-// 	for i := 0; i < b.N; i++ {
-// 		key := []byte("key" + strconv.Itoa(i))
-// 		_, _ = c.GetClosestN(key, 3)
-// 	}
-// }

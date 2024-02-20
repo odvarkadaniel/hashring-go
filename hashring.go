@@ -26,7 +26,9 @@ type Config struct {
 	// put into the hash ring (replication of a real node on the ring).
 	ReplicationFactor int
 
-	// PartitionCount determines how many time we want to partition a key.
+	// PartitionCount determines how many time we want to partition the space
+	// to make for more uniform distribution of keys. Select a prime number for
+	// this.
 	PartitionCount int
 }
 
@@ -109,9 +111,9 @@ func (hr *HashRing) distribute() error {
 		// Find bucket with free space to hold partition.
 		for count < len(hr.sortedSet) {
 			count++
-			// if count >= len(hr.sortedSet) {
-			// 	return fmt.Errorf("could not distribute partitions - try to increase bucket count")
-			// }
+			if count >= len(hr.sortedSet) {
+				return fmt.Errorf("could not distribute partitions - try to increase bucket count")
+			}
 
 			h := hr.sortedSet[idx]
 
@@ -130,8 +132,6 @@ func (hr *HashRing) distribute() error {
 				idx = 0
 			}
 		}
-
-		// return fmt.Errorf("could not distribute partitions - try to increase bucket count")
 	}
 
 	hr.partitions = partitions
