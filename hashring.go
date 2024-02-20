@@ -3,15 +3,15 @@ package hashring
 import (
 	"encoding/binary"
 	"fmt"
+	"log"
 	"math"
 	"slices"
 	"sort"
 	"sync"
 )
 
-// TODO: Make these values sensible.
 const (
-	DefaultPartitionCount    = 13
+	DefaultPartitionCount    = 71
 	DefaultReplicationFactor = 20
 )
 
@@ -67,7 +67,6 @@ func New(config Config, buckets []Bucket) *HashRing {
 		sortedSet:         []uint64{},
 		ring:              make(map[uint64]Bucket),
 		buckets:           make(map[string]Bucket),
-		partitions:        make(map[int]Bucket),
 		partitionCount:    uint64(config.PartitionCount),
 		replicationFactor: config.ReplicationFactor,
 	}
@@ -77,68 +76,68 @@ func New(config Config, buckets []Bucket) *HashRing {
 	}
 
 	if len(hr.buckets) > 0 {
-		hr.distibute()
+		if err := hr.distribute(); err != nil {
+			log.Fatalf("failed to initialize hashring: %v", err)
+			return nil
+		}
 	}
 
 	return hr
 }
 
-func (hr *HashRing) distibute() {
+func (hr *HashRing) distribute() error {
 	loads := make(map[string]float64)
 	partitions := make(map[int]Bucket)
-	bs := make([]byte, 8)
+	partitionCountBytes := make([]byte, 8)
+
+	avgLoad := hr.avgLoad()
 
 	for i := uint64(0); i < hr.partitionCount; i++ {
-		fmt.Println(i, "---", hr.partitionCount)
-		binary.LittleEndian.PutUint64(bs, i)
+		binary.LittleEndian.PutUint64(partitionCountBytes, i)
 
-		key := hr.hasher(bs)
-
-		fmt.Println("Key:", key)
+		hash := hr.hasher(partitionCountBytes)
 
 		idx := sort.Search(len(hr.sortedSet), func(i int) bool {
-			return hr.sortedSet[i] >= key
+			return hr.sortedSet[i] >= hash
 		})
-		if idx >= len(hr.sortedSet) {
+		if idx >= len(hr.sortedSet) || idx < 0 {
 			idx = 0
 		}
 
-		avgLoad := hr.avgLoad()
-
 		count := 0
 
-		for {
+		// Find bucket with free space to hold partition.
+		for count < len(hr.sortedSet) {
 			count++
-			if count >= len(hr.sortedSet) {
-				panic("sorted set bla bla")
-			}
+			// if count >= len(hr.sortedSet) {
+			// 	return fmt.Errorf("could not distribute partitions - try to increase bucket count")
+			// }
 
 			h := hr.sortedSet[idx]
 
 			bucket := hr.ring[h]
 			load := loads[bucket.String()] + 1
-			fmt.Println(load, "---", avgLoad)
 			if load <= avgLoad {
-				fmt.Println("here")
 				partitions[int(i)] = bucket
 				loads[bucket.String()]++
-
-				hr.partitions = partitions
-				hr.loads = loads
 
 				break
 			}
 
+			// "Wrap" around the ring.
 			idx++
 			if idx >= len(hr.sortedSet) {
 				idx = 0
 			}
 		}
 
+		// return fmt.Errorf("could not distribute partitions - try to increase bucket count")
 	}
 
 	hr.partitions = partitions
 	hr.loads = loads
+
+	return nil
 }
 
 // Add adds a new bucket to the consistent hash ring.
@@ -148,18 +147,18 @@ func (hr *HashRing) Add(bucket Bucket) {
 
 	hr.add(bucket)
 
-	hr.distibute()
+	if err := hr.distribute(); err != nil {
+		log.Fatal(err)
+	}
 }
 
 func (hr *HashRing) add(bucket Bucket) {
 	if _, ok := hr.buckets[bucket.String()]; ok {
-		// TODO: Log that we already have this member?
 		return
 	}
 
 	for i := 0; i < hr.replicationFactor; i++ {
-		key := fmt.Sprintf("%s%d", bucket.String(), i)
-		hash := hr.hasher([]byte(key))
+		hash := hr.hasher([]byte(fmt.Sprintf("%s%d", bucket.String(), i)))
 
 		hr.ring[hash] = bucket
 		hr.sortedSet = append(hr.sortedSet, hash)
@@ -180,20 +179,32 @@ func (hr *HashRing) remove(key string) {
 	defer hr.mu.Unlock()
 
 	if _, ok := hr.buckets[key]; !ok {
-		// TODO: Log that the member doesn't exist?
 		return
 	}
 
 	for i := 0; i < hr.replicationFactor; i++ {
-		key := fmt.Sprintf("%s%d", key, i)
-		hash := hr.hasher([]byte(key))
+		hash := hr.hasher([]byte(fmt.Sprintf("%s%d", key, i)))
 
 		delete(hr.ring, hash)
+
+		hr.removeElement(hash)
 	}
 
 	delete(hr.buckets, key)
+	if len(hr.buckets) < 1 {
+		hr.partitions = make(map[int]Bucket)
+		hr.loads = make(map[string]float64)
+		return
+	}
 
-	hr.distibute()
+	if err := hr.distribute(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func (hr *HashRing) removeElement(val uint64) {
+	i, _ := slices.BinarySearch(hr.sortedSet, val)
+	hr.sortedSet = append(hr.sortedSet[:i], hr.sortedSet[i+1:]...)
 }
 
 // Buckets returns all buckets that exist in the hash ring.
@@ -214,11 +225,6 @@ func (hr *HashRing) getBuckets() []Bucket {
 	return buckets
 }
 
-// TODO: Implement the functionality.
-func (hr *HashRing) GetClosestN(key string, n int) ([]Bucket, error) {
-	return nil, nil
-}
-
 // GetPartitionID gets a partition id for a given key in the ring.
 func (hr *HashRing) GetPartitionID(key string) int {
 	hr.mu.RLock()
@@ -228,9 +234,7 @@ func (hr *HashRing) GetPartitionID(key string) int {
 }
 
 func (hr *HashRing) getPartitionID(key string) int {
-	hash := hr.hasher([]byte(key))
-
-	return int(hash % uint64(hr.partitionCount))
+	return int(hr.hasher([]byte(key)) % uint64(hr.partitionCount))
 }
 
 // GetPartitionBucket gets a bucket for a given partition id.
@@ -243,10 +247,8 @@ func (hr *HashRing) GetPartitionBucket(id int) Bucket {
 
 func (hr *HashRing) getPartitionBucket(id int) Bucket {
 	if bucket, ok := hr.partitions[id]; !ok {
-		fmt.Println("returning nil")
 		return nil
 	} else {
-		fmt.Println("returning")
 		return bucket
 	}
 }
@@ -256,9 +258,7 @@ func (hr *HashRing) Get(key string) Bucket {
 	hr.mu.RLock()
 	defer hr.mu.RUnlock()
 
-	id := hr.getPartitionID(key)
-
-	return hr.getPartitionBucket(id)
+	return hr.getPartitionBucket(hr.getPartitionID(key))
 }
 
 // GetLoads returns a mapping of each bucket to it load.
@@ -293,25 +293,3 @@ func (hr *HashRing) avgLoad() float64 {
 
 	return math.Ceil(float64(hr.partitionCount/uint64(len(hr.buckets))) * 1.25)
 }
-
-// func (hr *HashRing) dec(bucket Bucket) {
-// 	hr.mu.Lock()
-// 	defer hr.mu.Unlock()
-
-// 	if _, ok := hr.buckets[bucket.String()]; !ok {
-// 		return
-// 	}
-
-// 	hr.loads[bucket.String()] -= 1
-// }
-
-// func (hr *HashRing) inc(bucket Bucket) {
-// 	hr.mu.Lock()
-// 	defer hr.mu.Unlock()
-
-// 	if _, ok := hr.buckets[bucket.String()]; !ok {
-// 		return
-// 	}
-
-// 	hr.loads[bucket.String()] += 1
-// }
