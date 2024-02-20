@@ -1,8 +1,11 @@
 package hashring
 
 import (
+	"encoding/binary"
 	"fmt"
+	"math"
 	"slices"
+	"sort"
 	"sync"
 )
 
@@ -36,10 +39,11 @@ type HashRing struct {
 
 	hasher            HashFn
 	sortedSet         []uint64
-	partitionCount    int
+	partitionCount    uint64
 	replicationFactor int
 
 	buckets    map[string]Bucket
+	loads      map[string]float64
 	partitions map[int]Bucket
 	ring       map[uint64]Bucket
 }
@@ -64,7 +68,7 @@ func New(config Config, buckets []Bucket) *HashRing {
 		ring:              make(map[uint64]Bucket),
 		buckets:           make(map[string]Bucket),
 		partitions:        make(map[int]Bucket),
-		partitionCount:    config.PartitionCount,
+		partitionCount:    uint64(config.PartitionCount),
 		replicationFactor: config.ReplicationFactor,
 	}
 
@@ -79,21 +83,75 @@ func New(config Config, buckets []Bucket) *HashRing {
 	return hr
 }
 
-// TODO: Implement the functionality.
 func (hr *HashRing) distibute() {
-	// for i := uint64(0); i < hr.partitionCount; i++ {
-	// }
+	loads := make(map[string]float64)
+	partitions := make(map[int]Bucket)
+	bs := make([]byte, 8)
+
+	for i := uint64(0); i < hr.partitionCount; i++ {
+		fmt.Println(i, "---", hr.partitionCount)
+		binary.LittleEndian.PutUint64(bs, i)
+
+		key := hr.hasher(bs)
+
+		fmt.Println("Key:", key)
+
+		idx := sort.Search(len(hr.sortedSet), func(i int) bool {
+			return hr.sortedSet[i] >= key
+		})
+		if idx >= len(hr.sortedSet) {
+			idx = 0
+		}
+
+		avgLoad := hr.avgLoad()
+
+		count := 0
+
+		for {
+			count++
+			if count >= len(hr.sortedSet) {
+				panic("sorted set bla bla")
+			}
+
+			h := hr.sortedSet[idx]
+
+			bucket := hr.ring[h]
+			load := loads[bucket.String()] + 1
+			fmt.Println(load, "---", avgLoad)
+			if load <= avgLoad {
+				fmt.Println("here")
+				partitions[int(i)] = bucket
+				loads[bucket.String()]++
+
+				hr.partitions = partitions
+				hr.loads = loads
+
+				break
+			}
+
+			idx++
+			if idx >= len(hr.sortedSet) {
+				idx = 0
+			}
+		}
+
+	}
+
+	hr.partitions = partitions
+	hr.loads = loads
 }
 
 // Add adds a new bucket to the consistent hash ring.
 func (hr *HashRing) Add(bucket Bucket) {
-	hr.add(bucket)
-}
-
-func (hr *HashRing) add(bucket Bucket) {
 	hr.mu.Lock()
 	defer hr.mu.Unlock()
 
+	hr.add(bucket)
+
+	hr.distibute()
+}
+
+func (hr *HashRing) add(bucket Bucket) {
 	if _, ok := hr.buckets[bucket.String()]; ok {
 		// TODO: Log that we already have this member?
 		return
@@ -110,8 +168,6 @@ func (hr *HashRing) add(bucket Bucket) {
 	slices.Sort(hr.sortedSet)
 
 	hr.buckets[bucket.String()] = bucket
-
-	hr.distibute()
 }
 
 // Remove removes a bucket from the consistent hash ring.
@@ -165,13 +221,13 @@ func (hr *HashRing) GetClosestN(key string, n int) ([]Bucket, error) {
 
 // GetPartitionID gets a partition id for a given key in the ring.
 func (hr *HashRing) GetPartitionID(key string) int {
+	hr.mu.RLock()
+	defer hr.mu.RUnlock()
+
 	return hr.getPartitionID(key)
 }
 
 func (hr *HashRing) getPartitionID(key string) int {
-	hr.mu.RLock()
-	defer hr.mu.RUnlock()
-
 	hash := hr.hasher([]byte(key))
 
 	return int(hash % uint64(hr.partitionCount))
@@ -179,23 +235,83 @@ func (hr *HashRing) getPartitionID(key string) int {
 
 // GetPartitionBucket gets a bucket for a given partition id.
 func (hr *HashRing) GetPartitionBucket(id int) Bucket {
+	hr.mu.RLock()
+	defer hr.mu.RUnlock()
+
 	return hr.getPartitionBucket(id)
 }
 
 func (hr *HashRing) getPartitionBucket(id int) Bucket {
-	hr.mu.RLock()
-	defer hr.mu.RUnlock()
-
 	if bucket, ok := hr.partitions[id]; !ok {
+		fmt.Println("returning nil")
 		return nil
 	} else {
+		fmt.Println("returning")
 		return bucket
 	}
 }
 
 // Get returns a bucket that is associated to a given key.
 func (hr *HashRing) Get(key string) Bucket {
+	hr.mu.RLock()
+	defer hr.mu.RUnlock()
+
 	id := hr.getPartitionID(key)
 
 	return hr.getPartitionBucket(id)
 }
+
+// GetLoads returns a mapping of each bucket to it load.
+func (hr *HashRing) GetLoads() map[string]float64 {
+	hr.mu.RLock()
+	defer hr.mu.RUnlock()
+
+	return hr.getLoads()
+}
+
+func (hr *HashRing) getLoads() map[string]float64 {
+	loads := map[string]float64{}
+
+	for k, v := range hr.loads {
+		loads[k] = v
+	}
+
+	return loads
+}
+
+func (hr *HashRing) AvgLoad() float64 {
+	hr.mu.RLock()
+	defer hr.mu.RUnlock()
+
+	return hr.avgLoad()
+}
+
+func (hr *HashRing) avgLoad() float64 {
+	if len(hr.buckets) == 0 {
+		return 0
+	}
+
+	return math.Ceil(float64(hr.partitionCount/uint64(len(hr.buckets))) * 1.25)
+}
+
+// func (hr *HashRing) dec(bucket Bucket) {
+// 	hr.mu.Lock()
+// 	defer hr.mu.Unlock()
+
+// 	if _, ok := hr.buckets[bucket.String()]; !ok {
+// 		return
+// 	}
+
+// 	hr.loads[bucket.String()] -= 1
+// }
+
+// func (hr *HashRing) inc(bucket Bucket) {
+// 	hr.mu.Lock()
+// 	defer hr.mu.Unlock()
+
+// 	if _, ok := hr.buckets[bucket.String()]; !ok {
+// 		return
+// 	}
+
+// 	hr.loads[bucket.String()] += 1
+// }

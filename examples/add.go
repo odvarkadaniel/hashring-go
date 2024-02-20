@@ -15,20 +15,33 @@ func (s *Server) String() string {
 
 func main() {
 	cfg := hashring.Config{
-		PartitionCount:    7,
-		ReplicationFactor: 2,
+		PartitionCount:    71,
+		ReplicationFactor: 20,
 		Hasher:            xxhash.Sum64,
 	}
 
 	buckets := []hashring.Bucket{}
 
-	for i := 0; i < 5; i++ {
+	for i := 0; i < 8; i++ {
 		member := Server(fmt.Sprintf("node%d", i))
 		buckets = append(buckets, &member)
 	}
 
 	ring := hashring.New(cfg, buckets)
-	fmt.Println(ring)
+
+	owners := make(map[string]int)
+	for partID := 0; partID < cfg.PartitionCount; partID++ {
+		owner := ring.GetPartitionBucket(partID)
+		fmt.Println(owner.String())
+		owners[owner.String()]++
+	}
+	fmt.Println("average load:", ring.AvgLoad())
+	fmt.Println("owners:", owners)
+	fmt.Println(ring.Buckets())
+	fmt.Println(ring.GetLoads())
+
+	// fmt.Println(ring)
+	// fmt.Println(ring.Buckets())
 	// key := "test-key"
 
 	// bucket := ring.Get(key)
