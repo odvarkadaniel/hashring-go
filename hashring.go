@@ -8,6 +8,8 @@ import (
 	"slices"
 	"sort"
 	"sync"
+
+	"github.com/google/btree"
 )
 
 const (
@@ -16,6 +18,14 @@ const (
 )
 
 type HashFn func([]byte) uint64
+
+type item struct {
+	value uint64
+}
+
+func (i item) Less(than btree.Item) bool {
+	return i.value < than.(item).value
+}
 
 type Config struct {
 	// Hasher is the hash function that we use to disribute the keys
@@ -41,6 +51,7 @@ type HashRing struct {
 
 	hasher            HashFn
 	sortedSet         []uint64
+	btree             *btree.BTree
 	partitionCount    uint64
 	replicationFactor int
 
@@ -67,6 +78,7 @@ func New(config Config, buckets []Bucket) *HashRing {
 	hr := &HashRing{
 		hasher:            config.Hasher,
 		sortedSet:         []uint64{},
+		btree:             btree.New(2),
 		ring:              make(map[uint64]Bucket),
 		buckets:           make(map[string]Bucket),
 		partitionCount:    uint64(config.PartitionCount),
