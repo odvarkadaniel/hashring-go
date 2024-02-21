@@ -16,7 +16,7 @@ go get github.com/odvarkadaniel/hashring-go
 You can find some usage examples in the `examples` folder.
 
 ## Documentation
-To see a list of all functions, please visit /TODO: Link/.
+To see a list of all functions, please visit [pkg.go.dev](https://pkg.go.dev/github.com/odvarkadaniel/hashring-go).
 
 ## Examples
 As mentioned before, more examples can be seen in the `examples` folder.
