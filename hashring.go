@@ -5,11 +5,10 @@ import (
 	"fmt"
 	"log"
 	"math"
-	"slices"
-	"sort"
 	"sync"
 
-	"github.com/google/btree"
+	rbt "github.com/emirpasic/gods/trees/redblacktree"
+	"github.com/emirpasic/gods/utils"
 )
 
 const (
@@ -18,14 +17,6 @@ const (
 )
 
 type HashFn func([]byte) uint64
-
-type item struct {
-	value uint64
-}
-
-func (i item) Less(than btree.Item) bool {
-	return i.value < than.(item).value
-}
 
 type Config struct {
 	// Hasher is the hash function that we use to disribute the keys
@@ -50,8 +41,7 @@ type HashRing struct {
 	mu sync.RWMutex
 
 	hasher            HashFn
-	sortedSet         []uint64
-	btree             *btree.BTree
+	storage           *rbt.Tree
 	partitionCount    uint64
 	replicationFactor int
 
@@ -77,8 +67,7 @@ func New(config Config, buckets []Bucket) *HashRing {
 
 	hr := &HashRing{
 		hasher:            config.Hasher,
-		sortedSet:         []uint64{},
-		btree:             btree.New(2),
+		storage:           rbt.NewWith(utils.UInt64Comparator),
 		ring:              make(map[uint64]Bucket),
 		buckets:           make(map[string]Bucket),
 		partitionCount:    uint64(config.PartitionCount),
@@ -111,25 +100,24 @@ func (hr *HashRing) distribute() error {
 
 		hash := hr.hasher(partitionCountBytes)
 
-		idx := sort.Search(len(hr.sortedSet), func(i int) bool {
-			return hr.sortedSet[i] >= hash
-		})
-		if idx >= len(hr.sortedSet) || idx < 0 {
-			idx = 0
+		nearest, found := hr.storage.Ceiling(hash)
+		if !found {
+			nearest = hr.storage.Left()
 		}
+		idx := nearest.Key.(uint64)
 
 		count := 0
 
 		// Find bucket with free space to hold partition.
-		for count < len(hr.sortedSet) {
+		for {
 			count++
-			if count >= len(hr.sortedSet) {
+
+			if count >= hr.storage.Size() {
 				return fmt.Errorf("could not distribute partitions - try to increase bucket count")
 			}
 
-			h := hr.sortedSet[idx]
+			bucket := hr.ring[idx]
 
-			bucket := hr.ring[h]
 			load := loads[bucket.String()] + 1
 			if load <= avgLoad {
 				partitions[int(i)] = bucket
@@ -138,11 +126,12 @@ func (hr *HashRing) distribute() error {
 				break
 			}
 
-			// "Wrap" around the ring.
 			idx++
-			if idx >= len(hr.sortedSet) {
-				idx = 0
+			newNearest, found := hr.storage.Ceiling(idx)
+			if !found {
+				newNearest = hr.storage.Left()
 			}
+			idx = newNearest.Key.(uint64)
 		}
 	}
 
@@ -173,10 +162,9 @@ func (hr *HashRing) add(bucket Bucket) {
 		hash := hr.hasher([]byte(fmt.Sprintf("%s%d", bucket.String(), i)))
 
 		hr.ring[hash] = bucket
-		hr.sortedSet = append(hr.sortedSet, hash)
-	}
 
-	slices.Sort(hr.sortedSet)
+		hr.storage.Put(hash, struct{}{})
+	}
 
 	hr.buckets[bucket.String()] = bucket
 }
@@ -199,7 +187,7 @@ func (hr *HashRing) remove(key string) {
 
 		delete(hr.ring, hash)
 
-		hr.removeElement(hash)
+		hr.storage.Remove(hash)
 	}
 
 	delete(hr.buckets, key)
@@ -212,11 +200,6 @@ func (hr *HashRing) remove(key string) {
 	if err := hr.distribute(); err != nil {
 		log.Fatal(err)
 	}
-}
-
-func (hr *HashRing) removeElement(val uint64) {
-	i, _ := slices.BinarySearch(hr.sortedSet, val)
-	hr.sortedSet = append(hr.sortedSet[:i], hr.sortedSet[i+1:]...)
 }
 
 // Buckets returns all buckets that exist in the hash ring.
